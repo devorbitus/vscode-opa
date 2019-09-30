@@ -135,10 +135,11 @@ function setFileCoverage(result: any) {
 
 function setEvalOutput(provider: JSONProvider, uri: vscode.Uri, error: string, result: any) {
     if (error !== '') {
-        vscode.window.showErrorMessage(error);
+        opaOutputShowError(error);
     } else {
+        opaOutputHide();
         if (result.result === undefined) {
-            provider.set(uri, "// No results found.", undefined);
+            provider.set(outputUri, `// No results found. Took ${getPrettyTime(result.metrics.timer_rego_query_eval_ns)}.`, undefined);
         } else {
             let output: any;
             if (result.result[0].bindings === undefined) {
@@ -171,12 +172,9 @@ function activateCheckFile(context: vscode.ExtensionContext) {
             opa.runWithStatus('opa', args, '', (code: number, stderr: string, stdout: string) => {
                 let output = stdout;
                 if (output.trim() !== '') {
-                    opaOutputChannel.show(true);
-                    opaOutputChannel.clear();
-                    opaOutputChannel.append(stdout);
+                    opaOutputShowError(output);
                 } else {
-                    opaOutputChannel.clear();
-                    opaOutputChannel.hide();
+                    opaOutputHide();
                 }
             });
         }
@@ -216,10 +214,9 @@ function activateCoverWorkspace(context: vscode.ExtensionContext) {
 
         opa.run('opa', args, '', (error: string, result: any) => {
             if (error !== '') {
-                opaOutputChannel.clear();
-                opaOutputChannel.append(error);
-                opaOutputChannel.show(true);
+                opaOutputShowError(error);
             } else {
+                opaOutputHide();
                 setFileCoverage(result);
                 showCoverageForWindow();
             }
@@ -236,7 +233,6 @@ function activateEvalPackage(context: vscode.ExtensionContext) {
     const registration = vscode.workspace.registerTextDocumentContentProvider(outputUri.scheme, provider);
 
     const evalPackageCommand = vscode.commands.registerCommand('opa.eval.package', onActiveWorkspaceEditor(outputUri, (editor: vscode.TextEditor) => {
-
 
         opa.parse('opa', opa.getDataDir(editor.document.uri), (pkg: string, _: string[]) => {
 
@@ -255,15 +251,18 @@ function activateEvalPackage(context: vscode.ExtensionContext) {
 
             opa.run('opa', args, 'data.' + pkg, (error: string, result: any) => {
                 if (error !== '') {
-                    vscode.window.showErrorMessage(error);
+                    opaOutputShowError(error);
                 } else {
+                    opaOutputHide();
                     if (result.result === undefined) {
-                        provider.set(outputUri, "// No results found.", undefined);
+                        provider.set(outputUri, `// No results found. Took ${getPrettyTime(result.metrics.timer_rego_query_eval_ns)}.`, undefined);
                     } else {
                         provider.set(outputUri, `// Evaluated package in ${getPrettyTime(result.metrics.timer_rego_query_eval_ns)}.`, result.result[0].expressions[0].value);
                     }
                 }
             });
+        }, (error: string) => {
+            opaOutputShowError(error);
         });
     }));
 
@@ -276,8 +275,6 @@ function activateEvalSelection(context: vscode.ExtensionContext) {
     const registration = vscode.workspace.registerTextDocumentContentProvider(outputUri.scheme, provider);
 
     const evalSelectionCommand = vscode.commands.registerCommand('opa.eval.selection', onActiveWorkspaceEditor(outputUri, (editor: vscode.TextEditor) => {
-
-
         opa.parse('opa', opa.getDataDir(editor.document.uri), (pkg: string, imports: string[]) => {
 
             let rootPath = opa.getDataDir(vscode.workspace.workspaceFolders![0].uri);
@@ -302,6 +299,8 @@ function activateEvalSelection(context: vscode.ExtensionContext) {
             opa.run('opa', args, text, (error: string, result: any) => {
                 setEvalOutput(provider, outputUri, error, result);
             });
+        }, (error: string) => {
+            opaOutputShowError(error);
         });
     }));
 
@@ -352,6 +351,8 @@ function activateEvalCoverage(context: vscode.ExtensionContext) {
                 setFileCoverage(result.coverage);
                 showCoverageForWindow();
             });
+        }, (error: string) => {
+            opaOutputShowError(error);
         });
     }));
 
@@ -377,7 +378,7 @@ function activateTestWorkspace(context: vscode.ExtensionContext) {
             if (code === 0 || code === 2) {
                 opaOutputChannel.append(stdout);
             } else {
-                vscode.window.showErrorMessage(stderr);
+                opaOutputShowError(stderr);
             }
         });
     });
@@ -422,9 +423,11 @@ function activateTraceSelection(context: vscode.ExtensionContext) {
                 if (code === 0 || code === 2) {
                     opaOutputChannel.append(stdout);
                 } else {
-                    vscode.window.showErrorMessage(stderr);
+                    opaOutputShowError(stderr);
                 }
             });
+        }, (error: string) => {
+            opaOutputShowError(error);
         });
     });
 
@@ -466,9 +469,11 @@ function activateProfileSelection(context: vscode.ExtensionContext) {
                 if (code === 0 || code === 2) {
                     opaOutputChannel.append(stdout);
                 } else {
-                    vscode.window.showErrorMessage(stderr);
+                    opaOutputShowError(stderr);
                 }
             });
+        }, (error: string) => {
+            opaOutputShowError(error);
         });
     });
 
@@ -516,13 +521,15 @@ function activatePartialSelection(context: vscode.ExtensionContext) {
                             if (code === 0 || code === 2) {
                                 opaOutputChannel.append(stdout);
                             } else {
-                                vscode.window.showErrorMessage(stderr);
+                                opaOutputShowError(stderr);
                             }
                         });
 
                     }
                 });
             });
+        }, (error: string) => {
+            opaOutputShowError(error);
         });
     });
 
@@ -567,6 +574,47 @@ function onActiveWorkspaceEditor(forURI: vscode.Uri, cb: (editor: vscode.TextEdi
 }
 
 export function deactivate() {
+}
+
+function opaOutputShowError(error: string) {
+    opaOutputChannel.clear();
+    opaOutputChannel.append(formatErrors(error));
+    opaOutputChannel.show(true);
+}
+
+function opaOutputHide() {
+    opaOutputChannel.clear();
+    opaOutputChannel.hide();
+}
+
+
+function formatErrors(error: string): string {
+    try {
+        const output = JSON.parse(error);
+        let errors;
+        if (output.error !== undefined) {
+            if (!Array.isArray(output.error)) {
+                errors = [output.error];
+            } else {
+                errors = output.error;
+            }
+        } else if (output.errors !== undefined) {
+            errors = output.errors;
+        }
+        let msg = [];
+        for (let i = 0; i < errors.length; i++) {
+            let location_prefix;
+            if (errors[i].location.file !== '') {
+                location_prefix = `${errors[i].location.file}:${errors[i].location.row}`;
+            } else {
+                location_prefix = `<query>`;
+            }
+            msg.push(`${location_prefix}: ${errors[i].code}: ${errors[i].message}`);
+        }
+        return msg.join('\n');
+    } catch (e) {
+        return error;
+    }
 }
 
 function checkOnSaveEnabled() {
